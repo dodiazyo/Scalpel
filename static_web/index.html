@@ -63,7 +63,34 @@
       <option>1m</option><option>5m</option><option selected>15m</option>
       <option>1H</option><option>4H</option>
     </select>
+    <button onclick="document.getElementById('cfgpanel').open=!document.getElementById('cfgpanel').open">⚙️ Configuración</button>
   </div>
+
+  <details class="card" id="cfgpanel">
+    <summary style="cursor:pointer;font-weight:600">⚙️ Configuración</summary>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:14px">
+      <label>Símbolos (separados por coma)
+        <input id="c_symbols" style="width:100%" placeholder="BTC/USDT, ETH/USDT, SOL/USDT"></label>
+      <label>Capital por trade ($)
+        <input id="c_capital" type="number" step="10"></label>
+      <label>Apalancamiento
+        <input id="c_leverage" type="number" step="1"></label>
+      <fieldset style="border:1px solid var(--line);border-radius:8px;padding:8px">
+        <legend style="color:var(--mut);font-size:11px">REVERSIÓN (15m)</legend>
+        <label style="font-size:12px">ADX máx (rango) <input id="c_adx_max" type="number" step="1" style="width:70px"></label><br>
+        <label style="font-size:12px">BB std <input id="c_bb_std" type="number" step="0.1" style="width:70px"></label><br>
+        <label style="font-size:12px">SL × ATR <input id="c_sl_atr_mult" type="number" step="0.1" style="width:70px"></label>
+      </fieldset>
+      <fieldset style="border:1px solid var(--line);border-radius:8px;padding:8px">
+        <legend style="color:var(--mut);font-size:11px">MOMENTUM (4H)</legend>
+        <label style="font-size:12px">ADX mín (tendencia) <input id="c_adx_min" type="number" step="1" style="width:70px"></label><br>
+        <label style="font-size:12px">Donchian <input id="c_don_period" type="number" step="1" style="width:70px"></label><br>
+        <label style="font-size:12px">Trailing × ATR <input id="c_trail_atr_mult" type="number" step="0.1" style="width:70px"></label>
+      </fieldset>
+    </div>
+    <div style="margin-top:12px"><button class="primary" onclick="saveCfg()">💾 Guardar configuración</button>
+      <span id="cfgmsg" style="margin-left:10px;color:var(--grn);font-size:12px"></span></div>
+  </details>
 
   <div class="stats">
     <div class="stat"><div class="k">Balance</div><div class="v" id="bal">—</div></div>
@@ -88,11 +115,40 @@ async function setCfg(){
     body:JSON.stringify({strategy,bar})});
   refresh();
 }
+let cfgLoaded=false;
+function fillCfg(cfg){
+  if(cfgLoaded) return;            // poblar solo una vez para no pisar lo que escribes
+  document.getElementById('c_symbols').value=(cfg.symbols||[]).join(', ');
+  document.getElementById('c_capital').value=cfg.capital;
+  document.getElementById('c_leverage').value=cfg.leverage;
+  document.getElementById('c_adx_max').value=cfg.adx_max;
+  document.getElementById('c_bb_std').value=cfg.bb_std;
+  document.getElementById('c_sl_atr_mult').value=cfg.sl_atr_mult;
+  document.getElementById('c_adx_min').value=cfg.adx_min;
+  document.getElementById('c_don_period').value=cfg.don_period;
+  document.getElementById('c_trail_atr_mult').value=cfg.trail_atr_mult;
+  document.getElementById('strategy').value=cfg.strategy;
+  document.getElementById('bar').value=cfg.bar;
+  cfgLoaded=true;
+}
+async function saveCfg(){
+  const num=id=>parseFloat(document.getElementById(id).value);
+  const body={
+    symbols:document.getElementById('c_symbols').value.split(',').map(s=>s.trim().toUpperCase()).filter(Boolean),
+    capital:num('c_capital'), leverage:parseInt(num('c_leverage')),
+    adx_max:num('c_adx_max'), bb_std:num('c_bb_std'), sl_atr_mult:num('c_sl_atr_mult'),
+    adx_min:num('c_adx_min'), don_period:parseInt(num('c_don_period')), trail_atr_mult:num('c_trail_atr_mult'),
+  };
+  await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const m=document.getElementById('cfgmsg'); m.textContent='✓ guardado'; setTimeout(()=>m.textContent='',2000);
+  refresh();
+}
 function money(n){return (n>=0?'+':'')+'$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
 function cls(n){return n>=0?'pos':'neg'}
 
 async function refresh(){
   let d; try{ d=await (await fetch('/api/status')).json() }catch(e){ return }
+  if(d.cfg) fillCfg(d.cfg);
   document.getElementById('conn').className='badge '+(d.connected?'on':'off');
   document.getElementById('conn').textContent=d.connected?'OKX conectado':'desconectado';
   document.getElementById('run').className='badge '+(d.running?'on':'off');
