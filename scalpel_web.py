@@ -16,6 +16,7 @@ Uso:
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 from datetime import datetime, timezone
@@ -32,6 +33,7 @@ from scalpel import add_indicators
 
 OKX = "https://www.okx.com"
 HERE = Path(__file__).parent
+STATE_FILE = HERE / "scalpel_state.json"
 
 
 def fetch_live(sym: str, bar: str, limit: int = 300) -> pd.DataFrame:
@@ -70,12 +72,62 @@ class PaperEngine:
         self.last_update = None
         self.log: list[str] = []
         self._lock = threading.Lock()
+        self._load()
         threading.Thread(target=self._loop, daemon=True).start()
 
     def _say(self, msg: str):
         stamp = datetime.now().strftime("%H:%M:%S")
         self.log.insert(0, f"[{stamp}] {msg}")
         self.log = self.log[:80]
+
+    def _save(self):
+        try:
+            STATE_FILE.write_text(json.dumps({
+                "balance": self.balance, "balance_ini": self.balance_ini,
+                "wins": self.wins, "losses": self.losses,
+                "trades": self.trades, "pos": self.pos, "cfg": self.cfg,
+            }))
+        except Exception:
+            pass
+
+    def _load(self):
+        try:
+            if STATE_FILE.exists():
+                d = json.loads(STATE_FILE.read_text())
+                self.balance = d.get("balance", self.balance)
+                self.balance_ini = d.get("balance_ini", self.balance_ini)
+                self.wins = d.get("wins", 0)
+                self.losses = d.get("losses", 0)
+                self.trades = d.get("trades", [])
+                self.pos = d.get("pos", {})
+                if d.get("cfg"):
+                    self.cfg.update(d["cfg"])
+                self._say(f"Estado restaurado: balance ${self.balance:,.2f} · "
+                          f"{len(self.trades)} operaciones · {len(self.pos)} abierta(s)")
+        except Exception:
+            pass
+
+    def _record_close(self, sym: str, exitp: float, motivo: str):
+        """Cierra una posición (asume que el lock ya está tomado)."""
+        c = self.cfg
+        notional = c["capital"] * c["leverage"]
+        p = self.pos[sym]
+        gan = (exitp - p["entry"]) * p["qty"] if p["dir"] == "LONG" \
+            else (p["entry"] - exitp) * p["qty"]
+        gan -= notional * c["fee"] * 2
+        self.balance += gan
+        if gan >= 0: self.wins += 1
+        else: self.losses += 1
+        self.trades.insert(0, {
+            "sym": sym, "dir": p["dir"], "entry": round(p["entry"], 6),
+            "exit": round(exitp, 6), "pnl": round(gan, 2),
+            "pnl_pct": round(gan / c["capital"] * 100, 2) if c["capital"] else 0.0,
+            "motivo": motivo, "ts": datetime.now().strftime("%m-%d %H:%M:%S"),
+        })
+        self.trades = self.trades[:80]
+        self._say(f"CIERRE {sym} {p['dir']} {motivo} | PnL ${gan:+.2f} | balance ${self.balance:,.2f}")
+        del self.pos[sym]
+        self._save()
 
     def _loop(self):
         # Lee OKX SIEMPRE (mercado en vivo), opere o no. El trading se hace
@@ -142,22 +194,7 @@ class PaperEngine:
                     price >= p["tp"] if p["dir"] == "LONG" else price <= p["tp"])
                 if hit_sl or hit_tp:
                     exitp = p["sl"] if hit_sl else p["tp"]
-                    gan = (exitp - p["entry"]) * p["qty"] if p["dir"] == "LONG" \
-                        else (p["entry"] - exitp) * p["qty"]
-                    gan -= notional * c["fee"] * 2
-                    self.balance += gan
-                    if gan >= 0: self.wins += 1
-                    else: self.losses += 1
-                    self.trades.insert(0, {
-                        "sym": sym, "dir": p["dir"], "entry": p["entry"],
-                        "exit": round(exitp, 6), "pnl": round(gan, 2),
-                        "motivo": "TP" if hit_tp else "SL",
-                        "ts": datetime.now().strftime("%H:%M:%S"),
-                    })
-                    self.trades = self.trades[:60]
-                    self._say(f"CIERRE {sym} {p['dir']} {'TP✅' if hit_tp else 'SL❌'} "
-                              f"PnL ${gan:+.2f} | balance ${self.balance:,.2f}")
-                    del self.pos[sym]
+                    self._record_close(sym, exitp, "TP ✅" if hit_tp else "SL ❌")
                 return
 
             # entrada (una vez por vela cerrada)
@@ -193,6 +230,7 @@ class PaperEngine:
                                  "sl": sl, "tp": tp, "atr": atr, "peak": entry}
                 self._say(f"ENTRADA {sym} {direction} @ ${entry:,.4f} "
                           f"SL ${sl:,.4f} TP {('—' if tp is None else f'${tp:,.4f}')}")
+                self._save()
 
     def status(self) -> dict:
         with self._lock:
@@ -278,7 +316,34 @@ def config(cfg: Cfg):
         if v is not None:
             engine.cfg[k] = v
     engine._say(f"⚙️ Config actualizada: {engine.cfg['strategy']} · {engine.cfg['bar']}")
+    engine._save()
     return {"ok": True, "cfg": engine.cfg}
+
+
+class CloseReq(BaseModel):
+    sym: str
+
+
+@app.post("/api/close")
+def close_pos(req: CloseReq):
+    with engine._lock:
+        if req.sym in engine.pos:
+            price = engine.sym_data.get(req.sym, {}).get("price") or engine.pos[req.sym]["entry"]
+            engine._record_close(req.sym, price, "Manual")
+            return {"ok": True}
+    return {"ok": False, "error": "no hay posición en " + req.sym}
+
+
+@app.post("/api/reset")
+def reset():
+    with engine._lock:
+        engine.balance = engine.balance_ini = 1000.0
+        engine.pos = {}
+        engine.trades = []
+        engine.wins = engine.losses = 0
+        engine._save()
+        engine._say("🔄 Estado reiniciado a $1,000")
+    return {"ok": True}
 
 
 app.mount("/static", StaticFiles(directory=str(HERE / "static_web")), name="static")

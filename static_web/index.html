@@ -63,6 +63,8 @@
       <option>1m</option><option>5m</option><option selected>15m</option>
       <option>1H</option><option>4H</option>
     </select>
+    <span style="flex:1"></span>
+    <button onclick="resetState()">🔄 Reiniciar balance</button>
   </div>
 
   <details class="card" id="cfgpanel">
@@ -108,6 +110,14 @@
 
 <script>
 async function api(path){ await fetch(path,{method:'POST'}); refresh(); }
+async function closePos(sym){
+  await fetch('/api/close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sym})});
+  refresh();
+}
+async function resetState(){
+  if(!confirm('¿Reiniciar balance a $1,000 y borrar el historial?')) return;
+  await fetch('/api/reset',{method:'POST'}); refresh();
+}
 async function setCfg(){
   const strategy=document.getElementById('strategy').value;
   const bar=document.getElementById('bar').value;
@@ -172,10 +182,11 @@ async function refresh(){
   }).join('')||'<div class="card">⏳ Conectando a OKX y cargando mercados…</div>';
 
   document.getElementById('positions').innerHTML=d.positions.length?
-    `<table><tr><th>Símbolo</th><th>Dir</th><th>Entrada</th><th>Precio actual</th><th>SL</th><th>TP</th><th>P&L</th></tr>`+
+    `<table><tr><th>Símbolo</th><th>Dir</th><th>Entrada</th><th>Precio actual</th><th>SL</th><th>TP</th><th>P&L</th><th></th></tr>`+
     d.positions.map(p=>`<tr><td>${p.sym}</td><td>${p.dir}</td><td>${p.entry}</td>
       <td>${p.price}</td><td>${p.sl}</td><td>${p.tp??'—'}</td>
-      <td class="${cls(p.pnl)}"><b>${money(p.pnl)}</b> (${p.pnl_pct>=0?'+':''}${p.pnl_pct}%)</td></tr>`).join('')+`</table>`
+      <td class="${cls(p.pnl)}"><b>${money(p.pnl)}</b> (${p.pnl_pct>=0?'+':''}${p.pnl_pct}%)</td>
+      <td><button class="danger" style="padding:4px 10px" onclick="closePos('${p.sym}')">Cerrar</button></td></tr>`).join('')+`</table>`
     :'<div class="card" style="color:var(--mut)">Sin posiciones abiertas.</div>';
 
   document.getElementById('trades').innerHTML=d.trades.length?
