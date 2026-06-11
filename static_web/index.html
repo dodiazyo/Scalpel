@@ -150,7 +150,7 @@ async function refresh(){
   let d; try{ d=await (await fetch('/api/status')).json() }catch(e){ return }
   if(d.cfg) fillCfg(d.cfg);
   document.getElementById('conn').className='badge '+(d.connected?'on':'off');
-  document.getElementById('conn').textContent=d.connected?'OKX conectado':'desconectado';
+  document.getElementById('conn').textContent=d.connected?('🟢 OKX en vivo'+(d.last_update?' · '+d.last_update:'')):'⏳ conectando a OKX…';
   document.getElementById('run').className='badge '+(d.running?'on':'off');
   document.getElementById('run').textContent=d.running?'corriendo':'detenido';
   document.getElementById('meta').textContent=d.strategy+' · '+d.bar;
@@ -162,12 +162,13 @@ async function refresh(){
 
   document.getElementById('syms').innerHTML=Object.entries(d.symbols).map(([s,m])=>{
     const rangeBadge=m.adx<18?'<span class="pos">RANGO</span>':'<span class="neg">TENDENCIA</span>';
-    return `<div class="card"><h3>${s} <span>$${m.price.toLocaleString()}</span></h3>
+    const ch=m.change||0; const chTxt=`<span class="${cls(ch)}">${ch>=0?'▲':'▼'} ${Math.abs(ch).toFixed(3)}%</span>`;
+    return `<div class="card"><h3>${s} <span>$${m.price.toLocaleString()} ${chTxt}</span></h3>
       <div class="kv"><span>RSI</span><b>${m.rsi}</b></div>
       <div class="kv"><span>ADX</span><b>${m.adx} ${rangeBadge}</b></div>
       <div class="kv"><span>Banda inf / sup</span><b>${m.bb_dn.toLocaleString()} / ${m.bb_up.toLocaleString()}</b></div>
       <div class="kv"><span>Media</span><b>${m.sma.toLocaleString()}</b></div></div>`;
-  }).join('')||'<div class="card">Esperando datos… pulsa Iniciar.</div>';
+  }).join('')||'<div class="card">⏳ Conectando a OKX y cargando mercados…</div>';
 
   document.getElementById('positions').innerHTML=d.positions.length?
     `<table><tr><th>Símbolo</th><th>Dir</th><th>Entrada</th><th>SL</th><th>TP</th></tr>`+

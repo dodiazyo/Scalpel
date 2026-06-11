@@ -67,6 +67,7 @@ class PaperEngine:
         self.wins = self.losses = 0
         self.running = False
         self.connected = False
+        self.last_update = None
         self.log: list[str] = []
         self._lock = threading.Lock()
         threading.Thread(target=self._loop, daemon=True).start()
@@ -77,114 +78,128 @@ class PaperEngine:
         self.log = self.log[:80]
 
     def _loop(self):
+        # Lee OKX SIEMPRE (mercado en vivo), opere o no. El trading se hace
+        # solo cuando self.running, pero la conexión y los precios son continuos.
         while True:
-            if self.running:
+            ok = False
+            for sym in self.cfg["symbols"]:
                 try:
-                    self._step()
-                    self.connected = True
+                    self._refresh(sym)
+                    ok = True
                 except Exception as e:
-                    self.connected = False
-                    self._say(f"⚠️ error: {e}")
-            time.sleep(20)
+                    self._say(f"⚠️ {sym}: {e}")
+            self.connected = ok
+            if ok:
+                self.last_update = datetime.now().strftime("%H:%M:%S")
+            time.sleep(10)
 
-    def _step(self):
+    def _refresh(self, sym: str):
         c = self.cfg
         notional = c["capital"] * c["leverage"]
-        for sym in c["symbols"]:
-            df = fetch_live(sym, c["bar"])
-            d = add_indicators(df, c["bb_period"], c["bb_std"], c["adx_period"],
-                               c["rsi_period"], c["don_period"])
-            if len(d) < 30:
-                continue
-            closed = d.iloc[-2]
-            price = float(d.iloc[-1]["open"])
-            cts = closed["ts"]
+        df = fetch_live(sym, c["bar"])
+        d = add_indicators(df, c["bb_period"], c["bb_std"], c["adx_period"],
+                           c["rsi_period"], c["don_period"])
+        if len(d) < 30:
+            return
+        closed = d.iloc[-2]
+        prev_close = float(closed["close"])
+        price = float(d.iloc[-1]["open"])      # precio vivo aprox (vela en formación)
+        live_close = float(d.iloc[-1]["close"])
+        cts = closed["ts"]
 
-            with self._lock:
-                self.sym_data[sym] = {
-                    "price": round(price, 6),
-                    "rsi": round(float(closed["rsi"]), 1),
-                    "adx": round(float(closed["adx"]), 1),
-                    "bb_dn": round(float(closed["bb_dn"]), 6),
-                    "bb_up": round(float(closed["bb_up"]), 6),
-                    "sma": round(float(closed["sma"]), 6),
-                    "don_hi": round(float(closed["don_hi"]), 6) if not pd.isna(closed["don_hi"]) else None,
-                    "don_lo": round(float(closed["don_lo"]), 6) if not pd.isna(closed["don_lo"]) else None,
-                }
+        with self._lock:
+            prevp = self.sym_data.get(sym, {}).get("price")
+            self.sym_data[sym] = {
+                "price": round(live_close, 6),
+                "change": round((live_close - prevp) / prevp * 100, 3) if prevp else 0.0,
+                "rsi": round(float(closed["rsi"]), 1),
+                "adx": round(float(closed["adx"]), 1),
+                "bb_dn": round(float(closed["bb_dn"]), 6),
+                "bb_up": round(float(closed["bb_up"]), 6),
+                "sma": round(float(closed["sma"]), 6),
+                "don_hi": round(float(closed["don_hi"]), 6) if not pd.isna(closed["don_hi"]) else None,
+                "don_lo": round(float(closed["don_lo"]), 6) if not pd.isna(closed["don_lo"]) else None,
+            }
 
-                # gestionar posición
-                if sym in self.pos:
-                    p = self.pos[sym]
-                    if c["strategy"] == "momentum" and c["trail_atr_mult"] > 0:
-                        atr = p["atr"]
-                        if p["dir"] == "LONG":
-                            p["peak"] = max(p["peak"], price)
-                            p["sl"] = max(p["sl"], p["peak"] - c["trail_atr_mult"] * atr)
-                        else:
-                            p["peak"] = min(p["peak"], price)
-                            p["sl"] = min(p["sl"], p["peak"] + c["trail_atr_mult"] * atr)
-                    hit_sl = price <= p["sl"] if p["dir"] == "LONG" else price >= p["sl"]
-                    hit_tp = p["tp"] is not None and (
-                        price >= p["tp"] if p["dir"] == "LONG" else price <= p["tp"])
-                    if hit_sl or hit_tp:
-                        exitp = p["sl"] if hit_sl else p["tp"]
-                        gan = (exitp - p["entry"]) * p["qty"] if p["dir"] == "LONG" \
-                            else (p["entry"] - exitp) * p["qty"]
-                        gan -= notional * c["fee"] * 2
-                        self.balance += gan
-                        if gan >= 0: self.wins += 1
-                        else: self.losses += 1
-                        self.trades.insert(0, {
-                            "sym": sym, "dir": p["dir"], "entry": p["entry"],
-                            "exit": round(exitp, 6), "pnl": round(gan, 2),
-                            "motivo": "TP" if hit_tp else "SL",
-                            "ts": datetime.now().strftime("%H:%M:%S"),
-                        })
-                        self.trades = self.trades[:60]
-                        self._say(f"CIERRE {sym} {p['dir']} {'TP✅' if hit_tp else 'SL❌'} "
-                                  f"PnL ${gan:+.2f} | balance ${self.balance:,.2f}")
-                        del self.pos[sym]
-                    continue
+            # El trading solo ocurre si el motor está en marcha.
+            if not self.running:
+                return
+            price = live_close
 
-                # entrada (una vez por vela cerrada)
-                if self.last_ts.get(sym) == cts:
-                    continue
-                self.last_ts[sym] = cts
-                if pd.isna(closed["adx"]) or pd.isna(closed["atr"]):
-                    continue
+            # gestionar posición abierta
+            if sym in self.pos:
+                p = self.pos[sym]
+                if c["strategy"] == "momentum" and c["trail_atr_mult"] > 0:
+                    atr = p["atr"]
+                    if p["dir"] == "LONG":
+                        p["peak"] = max(p["peak"], price)
+                        p["sl"] = max(p["sl"], p["peak"] - c["trail_atr_mult"] * atr)
+                    else:
+                        p["peak"] = min(p["peak"], price)
+                        p["sl"] = min(p["sl"], p["peak"] + c["trail_atr_mult"] * atr)
+                hit_sl = price <= p["sl"] if p["dir"] == "LONG" else price >= p["sl"]
+                hit_tp = p["tp"] is not None and (
+                    price >= p["tp"] if p["dir"] == "LONG" else price <= p["tp"])
+                if hit_sl or hit_tp:
+                    exitp = p["sl"] if hit_sl else p["tp"]
+                    gan = (exitp - p["entry"]) * p["qty"] if p["dir"] == "LONG" \
+                        else (p["entry"] - exitp) * p["qty"]
+                    gan -= notional * c["fee"] * 2
+                    self.balance += gan
+                    if gan >= 0: self.wins += 1
+                    else: self.losses += 1
+                    self.trades.insert(0, {
+                        "sym": sym, "dir": p["dir"], "entry": p["entry"],
+                        "exit": round(exitp, 6), "pnl": round(gan, 2),
+                        "motivo": "TP" if hit_tp else "SL",
+                        "ts": datetime.now().strftime("%H:%M:%S"),
+                    })
+                    self.trades = self.trades[:60]
+                    self._say(f"CIERRE {sym} {p['dir']} {'TP✅' if hit_tp else 'SL❌'} "
+                              f"PnL ${gan:+.2f} | balance ${self.balance:,.2f}")
+                    del self.pos[sym]
+                return
 
-                direction = None
-                if c["strategy"] == "momentum":
-                    if pd.isna(closed["don_hi"]) or closed["adx"] <= c["adx_min"]:
-                        pass
-                    elif closed["close"] > closed["don_hi"]:
+            # entrada (una vez por vela cerrada)
+            if self.last_ts.get(sym) == cts:
+                return
+            self.last_ts[sym] = cts
+            if pd.isna(closed["adx"]) or pd.isna(closed["atr"]):
+                return
+
+            direction = None
+            if c["strategy"] == "momentum":
+                if pd.isna(closed["don_hi"]) or closed["adx"] <= c["adx_min"]:
+                    pass
+                elif closed["close"] > closed["don_hi"]:
+                    direction = "LONG"
+                elif closed["close"] < closed["don_lo"]:
+                    direction = "SHORT"
+            else:
+                if not pd.isna(closed["bb_dn"]) and closed["adx"] < c["adx_max"]:
+                    if closed["close"] <= closed["bb_dn"]:
                         direction = "LONG"
-                    elif closed["close"] < closed["don_lo"]:
+                    elif closed["close"] >= closed["bb_up"]:
                         direction = "SHORT"
-                else:
-                    if not pd.isna(closed["bb_dn"]) and closed["adx"] < c["adx_max"]:
-                        if closed["close"] <= closed["bb_dn"]:
-                            direction = "LONG"
-                        elif closed["close"] >= closed["bb_up"]:
-                            direction = "SHORT"
 
-                if direction:
-                    entry = price
-                    qty = notional / entry
-                    atr = float(closed["atr"])
-                    sl = entry - c["sl_atr_mult"] * atr if direction == "LONG" \
-                        else entry + c["sl_atr_mult"] * atr
-                    tp = None if c["strategy"] == "momentum" else float(closed["sma"])
-                    self.pos[sym] = {"dir": direction, "entry": entry, "qty": qty,
-                                     "sl": sl, "tp": tp, "atr": atr, "peak": entry}
-                    self._say(f"ENTRADA {sym} {direction} @ ${entry:,.4f} "
-                              f"SL ${sl:,.4f} TP {('—' if tp is None else f'${tp:,.4f}')}")
+            if direction:
+                entry = price
+                qty = notional / entry
+                atr = float(closed["atr"])
+                sl = entry - c["sl_atr_mult"] * atr if direction == "LONG" \
+                    else entry + c["sl_atr_mult"] * atr
+                tp = None if c["strategy"] == "momentum" else float(closed["sma"])
+                self.pos[sym] = {"dir": direction, "entry": entry, "qty": qty,
+                                 "sl": sl, "tp": tp, "atr": atr, "peak": entry}
+                self._say(f"ENTRADA {sym} {direction} @ ${entry:,.4f} "
+                          f"SL ${sl:,.4f} TP {('—' if tp is None else f'${tp:,.4f}')}")
 
     def status(self) -> dict:
         with self._lock:
             total = self.wins + self.losses
             return {
                 "running": self.running, "connected": self.connected,
+                "last_update": self.last_update,
                 "strategy": self.cfg["strategy"], "bar": self.cfg["bar"],
                 "balance": round(self.balance, 2), "balance_ini": self.balance_ini,
                 "pnl": round(self.balance - self.balance_ini, 2),
