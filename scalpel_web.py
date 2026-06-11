@@ -57,7 +57,7 @@ class PaperEngine:
             "bar": "15m", "strategy": "meanrev",
             "bb_period": 20, "bb_std": 2.5, "adx_period": 14, "adx_max": 18.0,
             "rsi_period": 14, "don_period": 20, "adx_min": 25.0,
-            "sl_atr_mult": 1.5, "trail_atr_mult": 3.0,
+            "sl_atr_mult": 1.5, "trail_atr_mult": 3.0, "min_sl_pct": 0.4,
             "capital": 100.0, "leverage": 5, "fee": 0.0005,
         }
         self.balance = 1000.0
@@ -254,8 +254,10 @@ class PaperEngine:
                 entry = price
                 qty = notional / entry
                 atr = float(closed["atr"])
-                sl = entry - c["sl_atr_mult"] * atr if direction == "LONG" \
-                    else entry + c["sl_atr_mult"] * atr
+                # Distancia de SL: ATR×mult, pero con un piso mínimo en % (a 1m el
+                # ATR es diminuto y el stop quedaría pegadísimo al precio).
+                dist = max(c["sl_atr_mult"] * atr, entry * c.get("min_sl_pct", 0.4) / 100)
+                sl = entry - dist if direction == "LONG" else entry + dist
                 tp = None if c["strategy"] == "momentum" else float(closed["sma"])
                 self.pos[sym] = {"dir": direction, "entry": entry, "qty": qty,
                                  "sl": sl, "tp": tp, "atr": atr, "peak": entry}
@@ -313,6 +315,7 @@ class Cfg(BaseModel):
     don_period: int | None = None
     sl_atr_mult: float | None = None
     trail_atr_mult: float | None = None
+    min_sl_pct: float | None = None
     capital: float | None = None
     leverage: int | None = None
 
