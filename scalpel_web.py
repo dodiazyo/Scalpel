@@ -132,6 +132,7 @@ class PaperEngine:
     def _loop(self):
         # Lee OKX SIEMPRE (mercado en vivo), opere o no. El trading se hace
         # solo cuando self.running, pero la conexión y los precios son continuos.
+        cycle = 0
         while True:
             ok = False
             for sym in self.cfg["symbols"]:
@@ -143,6 +144,15 @@ class PaperEngine:
             self.connected = ok
             if ok:
                 self.last_update = datetime.now().strftime("%H:%M:%S")
+                # Latido cada ~minuto: muestra que el bot está vivo y qué evalúa.
+                cycle += 1
+                if cycle % 6 == 1:
+                    with self._lock:
+                        resumen = " · ".join(
+                            f"{s.split('/')[0]} {m.get('estado','?').split(' ',1)[-1] if ' ' in m.get('estado','') else m.get('estado','?')}"
+                            for s, m in self.sym_data.items())
+                    modo = "operando" if self.running else "solo observando"
+                    self._say(f"💓 {modo} · {resumen}")
             time.sleep(10)
 
     def _refresh(self, sym: str):
@@ -159,6 +169,26 @@ class PaperEngine:
         live_close = float(d.iloc[-1]["close"])
         cts = closed["ts"]
 
+        # Estado de evaluación: qué está viendo el bot para (no) entrar.
+        if c["strategy"] == "momentum":
+            if pd.isna(closed["don_hi"]) or closed["adx"] <= c["adx_min"]:
+                estado = "⏳ sin tendencia (espera ADX)"
+            elif closed["close"] > closed["don_hi"]:
+                estado = "🟢 ruptura alcista"
+            elif closed["close"] < closed["don_lo"]:
+                estado = "🔴 ruptura bajista"
+            else:
+                estado = "tendencia, sin ruptura"
+        else:
+            if pd.isna(closed["bb_dn"]) or closed["adx"] >= c["adx_max"]:
+                estado = "⏳ tendencia (espera rango)"
+            elif closed["close"] <= closed["bb_dn"]:
+                estado = "🟢 toca banda inferior"
+            elif closed["close"] >= closed["bb_up"]:
+                estado = "🔴 toca banda superior"
+            else:
+                estado = "en rango, sin extremo"
+
         with self._lock:
             prevp = self.sym_data.get(sym, {}).get("price")
             self.sym_data[sym] = {
@@ -171,6 +201,7 @@ class PaperEngine:
                 "sma": round(float(closed["sma"]), 6),
                 "don_hi": round(float(closed["don_hi"]), 6) if not pd.isna(closed["don_hi"]) else None,
                 "don_lo": round(float(closed["don_lo"]), 6) if not pd.isna(closed["don_lo"]) else None,
+                "estado": estado,
             }
 
             # El trading solo ocurre si el motor está en marcha.

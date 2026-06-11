@@ -178,7 +178,8 @@ async function refresh(){
       <div class="kv"><span>RSI</span><b>${m.rsi}</b></div>
       <div class="kv"><span>ADX</span><b>${m.adx} ${rangeBadge}</b></div>
       <div class="kv"><span>Banda inf / sup</span><b>${m.bb_dn.toLocaleString()} / ${m.bb_up.toLocaleString()}</b></div>
-      <div class="kv"><span>Media</span><b>${m.sma.toLocaleString()}</b></div></div>`;
+      <div class="kv"><span>Media</span><b>${m.sma.toLocaleString()}</b></div>
+      <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line);font-size:13px">${m.estado||'…'}</div></div>`;
   }).join('')||'<div class="card">⏳ Conectando a OKX y cargando mercados…</div>';
 
   document.getElementById('positions').innerHTML=d.positions.length?
