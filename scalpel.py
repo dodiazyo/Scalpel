@@ -120,13 +120,23 @@ def synthetic_candles(n: int = 60000, seed: int = 7, p0: float = 50000.0) -> pd.
 # ─────────────────────────────────────────────────────────────────────────────
 # Indicadores
 # ─────────────────────────────────────────────────────────────────────────────
-def add_indicators(df: pd.DataFrame, bb_period: int, bb_std: float, adx_period: int) -> pd.DataFrame:
+def add_indicators(df: pd.DataFrame, bb_period: int, bb_std: float,
+                   adx_period: int, rsi_period: int = 14) -> pd.DataFrame:
     d = df.copy()
     # Bollinger
     d["sma"] = d["close"].rolling(bb_period).mean()
     sd = d["close"].rolling(bb_period).std(ddof=0)
     d["bb_up"] = d["sma"] + bb_std * sd
     d["bb_dn"] = d["sma"] - bb_std * sd
+
+    # RSI (Wilder)
+    delta = d["close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / rsi_period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / rsi_period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    d["rsi"] = 100 - 100 / (1 + rs)
 
     # ADX (Wilder)
     high, low, close = d["high"], d["low"], d["close"]
@@ -161,7 +171,7 @@ class ScalpelBT:
         self.notional = args.capital * args.leverage
 
         self.prepared = {
-            s: add_indicators(dfs[s], args.bb_period, args.bb_std, args.adx_period)
+            s: add_indicators(dfs[s], args.bb_period, args.bb_std, args.adx_period, args.rsi_period)
             for s in symbols
         }
         # alinear por índice común
@@ -258,14 +268,28 @@ class ScalpelBT:
                     continue
 
                 # señal sobre la vela ANTERIOR cerrada; entra al open de esta
-                if np.isnan(prev["bb_dn"]) or np.isnan(prev["adx"]):
+                if np.isnan(prev["bb_dn"]) or np.isnan(prev["adx"]) or np.isnan(prev["rsi"]):
                     continue
                 lateral = prev["adx"] < self.args.adx_max
                 if not lateral:
                     continue
-                if prev["close"] <= prev["bb_dn"]:
+
+                a = self.args
+                if a.require_reversal:
+                    # Vela de rechazo: mechó fuera de la banda pero cerró de vuelta adentro.
+                    long_trig = prev["low"] <= prev["bb_dn"] and prev["close"] > prev["bb_dn"]
+                    short_trig = prev["high"] >= prev["bb_up"] and prev["close"] < prev["bb_up"]
+                else:
+                    long_trig = prev["close"] <= prev["bb_dn"]
+                    short_trig = prev["close"] >= prev["bb_up"]
+
+                # Filtro RSI extremo (rsi_long bajo = sobreventa; rsi_short alto = sobrecompra).
+                long_ok = long_trig and prev["rsi"] <= a.rsi_long
+                short_ok = short_trig and prev["rsi"] >= a.rsi_short
+
+                if long_ok:
                     self._open(sym, "LONG", ts, c["open"], prev["sma"], prev["atr"])
-                elif prev["close"] >= prev["bb_up"]:
+                elif short_ok:
                     self._open(sym, "SHORT", ts, c["open"], prev["sma"], prev["atr"])
 
             self.equity.append({"ts": str(ts), "balance": round(self.balance, 2),
@@ -357,6 +381,13 @@ def main():
                     help="entradas y TP como ordenes limite (maker), sin cruzar spread")
     ap.add_argument("--maker-fee", type=float, default=0.0002,
                     help="fee maker por lado (default 0.02 porciento)")
+    ap.add_argument("--rsi-period", type=int, default=14)
+    ap.add_argument("--rsi-long", type=float, default=100.0,
+                    help="solo LONG si RSI <= este valor (default 100 = sin filtro)")
+    ap.add_argument("--rsi-short", type=float, default=0.0,
+                    help="solo SHORT si RSI >= este valor (default 0 = sin filtro)")
+    ap.add_argument("--require-reversal", action="store_true",
+                    help="exige vela de rechazo (mecha fuera, cierre dentro de la banda)")
     args = ap.parse_args()
 
     print("Scalpel — backtester de scalping")
