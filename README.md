@@ -41,3 +41,35 @@ uno de los cientos de trades diarios paga peaje. El reporte separa el **PnL brut
 - `scalpel_trades.csv` — todos los trades con detalle
 - `scalpel_equity.csv` — curva de capital
 - `scalpel_report.txt` — resumen de métricas
+
+## Conclusiones de la investigación (BTC/ETH, reversión a la media)
+
+Se barrió la estrategia a través de timeframes, midiendo el **ratio coste/edge**
+(coste por trade ÷ edge bruto por trade) como variable maestra:
+
+| Timeframe | PnL bruto (señal) | Profit factor | Ratio coste/edge |
+|-----------|-------------------|---------------|------------------|
+| 1m  | +$5  (apenas)     | 0.62 | 5.2× |
+| 5m  | +$33 (positivo)   | 0.77 | 4.0× |
+| 15m | +$19 (positivo)   | **0.90** | **2.4×** |
+| 1H  | −$39 (negativo)   | 0.82 | señal perdedora |
+
+**Hallazgos:**
+
+1. **Los costes son el adversario principal del scalping.** En 1m, una estrategia
+   con 60%+ de aciertos pierde porque el edge bruto (~0.01% del notional) es 5×
+   menor que el coste de entrar/salir.
+2. **Las órdenes maker (límite) casi reducen los costes a la mitad** vs taker, pero
+   no bastan cuando el edge es muy fino.
+3. **El SL debe escalar con la volatilidad (ATR), no ser un % fijo** — un stop fijo
+   penaliza injustamente los timeframes altos.
+4. **La reversión a la media tiene un punto dulce intradía (5m–15m).** En 1m los
+   costes dominan; en 1H la señal misma se vuelve perdedora porque 1H ya es
+   territorio de tendencia (donde la reversión fracasa por naturaleza).
+5. **Veredicto:** en su mejor configuración (15m, maker, SL por ATR) llega a
+   profit factor **0.90** — cerca pero sin cruzar a verde. El edge es real pero
+   demasiado fino para despejar los costes de forma confiable. **No operar.**
+
+La lección transferible: cada estrategia tiene su hábitat de timeframe. Reversión a
+la media → intradía corto; seguimiento de tendencia → swing (1H+). El backtester
+cumplió su función: descartar una estrategia sin ventaja **sin arriesgar capital**.
