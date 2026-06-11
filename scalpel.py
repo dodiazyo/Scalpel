@@ -121,13 +121,17 @@ def synthetic_candles(n: int = 60000, seed: int = 7, p0: float = 50000.0) -> pd.
 # Indicadores
 # ─────────────────────────────────────────────────────────────────────────────
 def add_indicators(df: pd.DataFrame, bb_period: int, bb_std: float,
-                   adx_period: int, rsi_period: int = 14) -> pd.DataFrame:
+                   adx_period: int, rsi_period: int = 14, don_period: int = 20) -> pd.DataFrame:
     d = df.copy()
     # Bollinger
     d["sma"] = d["close"].rolling(bb_period).mean()
     sd = d["close"].rolling(bb_period).std(ddof=0)
     d["bb_up"] = d["sma"] + bb_std * sd
     d["bb_dn"] = d["sma"] - bb_std * sd
+
+    # Donchian (máximo/mínimo de las N velas anteriores, sin incluir la actual)
+    d["don_hi"] = d["high"].rolling(don_period).max().shift(1)
+    d["don_lo"] = d["low"].rolling(don_period).min().shift(1)
 
     # RSI (Wilder)
     delta = d["close"].diff()
@@ -171,7 +175,8 @@ class ScalpelBT:
         self.notional = args.capital * args.leverage
 
         self.prepared = {
-            s: add_indicators(dfs[s], args.bb_period, args.bb_std, args.adx_period, args.rsi_period)
+            s: add_indicators(dfs[s], args.bb_period, args.bb_std, args.adx_period,
+                              args.rsi_period, args.don_period)
             for s in symbols
         }
         # alinear por índice común
@@ -215,9 +220,12 @@ class ScalpelBT:
         else:
             sl = entry * (1 - self.args.sl_pct / 100) if direction == "LONG" \
                 else entry * (1 + self.args.sl_pct / 100)
+        # Momentum: sin TP fijo (deja correr con trailing); reversión: TP en la media.
+        tp = None if self.args.strategy == "momentum" else sma
         self.pos[sym] = {
             "dir": direction, "entry": entry, "qty": qty, "sl": sl,
-            "tp": sma, "ts_open": str(ts), "barras": 0,
+            "tp": tp, "ts_open": str(ts), "barras": 0,
+            "peak": entry, "atr": atr,
         }
 
     def _close(self, sym, ts, exit_px, motivo):
@@ -259,10 +267,22 @@ class ScalpelBT:
                 if sym in self.pos:
                     p = self.pos[sym]
                     p["barras"] += 1
+
+                    # Trailing stop por ATR (momentum): el SL sigue al precio favorable.
+                    tmult = self.args.trail_atr_mult
+                    if tmult > 0 and p["atr"] and not np.isnan(p["atr"]):
+                        if p["dir"] == "LONG":
+                            p["peak"] = max(p["peak"], c["high"])
+                            p["sl"] = max(p["sl"], p["peak"] - tmult * p["atr"])
+                        else:
+                            p["peak"] = min(p["peak"], c["low"])
+                            p["sl"] = min(p["sl"], p["peak"] + tmult * p["atr"])
+
                     hit_sl = (c["low"] <= p["sl"]) if p["dir"] == "LONG" else (c["high"] >= p["sl"])
-                    hit_tp = (c["high"] >= p["tp"]) if p["dir"] == "LONG" else (c["low"] <= p["tp"])
+                    hit_tp = p["tp"] is not None and (
+                        (c["high"] >= p["tp"]) if p["dir"] == "LONG" else (c["low"] <= p["tp"]))
                     if hit_sl:
-                        self._close(sym, ts, p["sl"], "SL")
+                        self._close(sym, ts, p["sl"], "Trail" if tmult > 0 else "SL")
                     elif hit_tp:
                         self._close(sym, ts, p["tp"], "TP")
                     elif p["barras"] >= self.args.max_hold:
@@ -272,25 +292,33 @@ class ScalpelBT:
                             else ((p["entry"] - c["close"]) * p["qty"])
                     continue
 
-                # señal sobre la vela ANTERIOR cerrada; entra al open de esta
-                if np.isnan(prev["bb_dn"]) or np.isnan(prev["adx"]) or np.isnan(prev["rsi"]):
-                    continue
-                lateral = prev["adx"] < self.args.adx_max
-                if not lateral:
-                    continue
-
                 a = self.args
-                if a.require_reversal:
-                    # Vela de rechazo: mechó fuera de la banda pero cerró de vuelta adentro.
-                    long_trig = prev["low"] <= prev["bb_dn"] and prev["close"] > prev["bb_dn"]
-                    short_trig = prev["high"] >= prev["bb_up"] and prev["close"] < prev["bb_up"]
-                else:
-                    long_trig = prev["close"] <= prev["bb_dn"]
-                    short_trig = prev["close"] >= prev["bb_up"]
+                if np.isnan(prev["adx"]) or np.isnan(prev["atr"]):
+                    continue
 
-                # Filtro RSI extremo (rsi_long bajo = sobreventa; rsi_short alto = sobrecompra).
-                long_ok = long_trig and prev["rsi"] <= a.rsi_long
-                short_ok = short_trig and prev["rsi"] >= a.rsi_short
+                if a.strategy == "momentum":
+                    # Ruptura del canal Donchian CON tendencia (ADX alto).
+                    if np.isnan(prev["don_hi"]):
+                        continue
+                    trending = prev["adx"] > a.adx_min
+                    if not trending:
+                        continue
+                    long_ok = prev["close"] > prev["don_hi"]
+                    short_ok = prev["close"] < prev["don_lo"]
+                else:
+                    # Reversión a la media: extremo de banda CON rango (ADX bajo).
+                    if np.isnan(prev["bb_dn"]) or np.isnan(prev["rsi"]):
+                        continue
+                    if prev["adx"] >= a.adx_max:
+                        continue
+                    if a.require_reversal:
+                        long_trig = prev["low"] <= prev["bb_dn"] and prev["close"] > prev["bb_dn"]
+                        short_trig = prev["high"] >= prev["bb_up"] and prev["close"] < prev["bb_up"]
+                    else:
+                        long_trig = prev["close"] <= prev["bb_dn"]
+                        short_trig = prev["close"] >= prev["bb_up"]
+                    long_ok = long_trig and prev["rsi"] <= a.rsi_long
+                    short_ok = short_trig and prev["rsi"] >= a.rsi_short
 
                 if long_ok:
                     self._open(sym, "LONG", ts, c["open"], prev["sma"], prev["atr"])
@@ -315,15 +343,22 @@ class ScalpelBT:
         L = []
         w = L.append
         w("=" * 64)
-        w("SCALPEL — RESUMEN (reversión a la media + filtro ADX)")
+        nombre = "MOMENTUM (Donchian)" if self.args.strategy == "momentum" else "REVERSIÓN A LA MEDIA"
+        w(f"SCALPEL — RESUMEN ({nombre})")
         w("=" * 64)
-        bar_min = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30, "1H": 60, "1h": 60}.get(self.args.bar, 1)
+        bar_min = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
+                   "1H": 60, "1h": 60, "2H": 120, "4H": 240, "6H": 360,
+                   "12H": 720, "1D": 1440, "1Dutc": 1440}.get(self.args.bar, 1)
         cpd = 1440 / bar_min  # velas por día
         w(f"Periodo:        {self.index[WARMUP].date()} → {self.index[-1].date()} "
           f"({(self.n - WARMUP) / cpd:.0f} días, velas {self.args.bar})")
         w(f"Símbolos:       {', '.join(self.symbols)}")
-        w(f"Parámetros:     BB({self.args.bb_period},{self.args.bb_std}) · "
-          f"ADX<{self.args.adx_max} · SL {self.args.sl_pct}% · max_hold {self.args.max_hold}")
+        if self.args.strategy == "momentum":
+            w(f"Parámetros:     MOMENTUM · Donchian({self.args.don_period}) · "
+              f"ADX>{self.args.adx_min} · trail {self.args.trail_atr_mult}xATR · max_hold {self.args.max_hold}")
+        else:
+            w(f"Parámetros:     MEANREV · BB({self.args.bb_period},{self.args.bb_std}) · "
+              f"ADX<{self.args.adx_max} · SL {self.args.sl_pct}pct · max_hold {self.args.max_hold}")
         w(f"Costes:         fee {self.fee*100:.3f}%/lado · spread {self.args.spread_bps}bps · "
           f"slippage {self.args.slippage_bps}bps · notional ${self.notional:,.0f}")
         w("-" * 64)
@@ -376,10 +411,16 @@ def main():
     ap.add_argument("--balance", type=float, default=1000.0)
     ap.add_argument("--capital", type=float, default=100.0, help="margen por trade")
     ap.add_argument("--leverage", type=int, default=5)
+    ap.add_argument("--strategy", choices=["meanrev", "momentum"], default="meanrev",
+                    help="meanrev = reversión a la media; momentum = ruptura Donchian")
     ap.add_argument("--bb-period", type=int, default=20)
     ap.add_argument("--bb-std", type=float, default=2.0)
+    ap.add_argument("--don-period", type=int, default=20, help="velas del canal Donchian (momentum)")
     ap.add_argument("--adx-period", type=int, default=14)
-    ap.add_argument("--adx-max", type=float, default=25.0, help="solo opera si ADX < este valor")
+    ap.add_argument("--adx-max", type=float, default=25.0, help="meanrev: solo opera si ADX < este valor")
+    ap.add_argument("--adx-min", type=float, default=25.0, help="momentum: solo opera si ADX > este valor")
+    ap.add_argument("--trail-atr-mult", type=float, default=0.0,
+                    help="trailing stop = N x ATR (momentum); 0 = sin trailing")
     ap.add_argument("--sl-pct", type=float, default=0.5, help="stop loss en porciento (fijo)")
     ap.add_argument("--sl-atr-mult", type=float, default=0.0,
                     help="SL = N x ATR (escala con volatilidad); 0 = usa --sl-pct fijo")
