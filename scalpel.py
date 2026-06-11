@@ -208,8 +208,13 @@ class ScalpelBT:
         self.fees_total += fee
         self.cross_total += cross
         self.balance -= fee
-        sl = entry * (1 - self.args.sl_pct / 100) if direction == "LONG" \
-            else entry * (1 + self.args.sl_pct / 100)
+        # SL: por ATR (escala con la volatilidad) si --sl-atr-mult > 0; si no, % fijo.
+        if self.args.sl_atr_mult > 0 and atr and not np.isnan(atr):
+            dist = self.args.sl_atr_mult * atr
+            sl = entry - dist if direction == "LONG" else entry + dist
+        else:
+            sl = entry * (1 - self.args.sl_pct / 100) if direction == "LONG" \
+                else entry * (1 + self.args.sl_pct / 100)
         self.pos[sym] = {
             "dir": direction, "entry": entry, "qty": qty, "sl": sl,
             "tp": sma, "ts_open": str(ts), "barras": 0,
@@ -312,8 +317,10 @@ class ScalpelBT:
         w("=" * 64)
         w("SCALPEL — RESUMEN (reversión a la media + filtro ADX)")
         w("=" * 64)
+        bar_min = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30, "1H": 60, "1h": 60}.get(self.args.bar, 1)
+        cpd = 1440 / bar_min  # velas por día
         w(f"Periodo:        {self.index[WARMUP].date()} → {self.index[-1].date()} "
-          f"({(self.n - WARMUP) / 1440:.0f} días, velas 1m)")
+          f"({(self.n - WARMUP) / cpd:.0f} días, velas {self.args.bar})")
         w(f"Símbolos:       {', '.join(self.symbols)}")
         w(f"Parámetros:     BB({self.args.bb_period},{self.args.bb_std}) · "
           f"ADX<{self.args.adx_max} · SL {self.args.sl_pct}% · max_hold {self.args.max_hold}")
@@ -364,6 +371,7 @@ def main():
     ap = argparse.ArgumentParser(description="Scalpel — backtester de scalping")
     ap.add_argument("--symbols", nargs="+", default=["BTC/USDT", "ETH/USDT"])
     ap.add_argument("--days", type=int, default=90)
+    ap.add_argument("--bar", default="1m", help="timeframe OKX: 1m, 5m, 15m, 1H…")
     ap.add_argument("--synthetic", action="store_true")
     ap.add_argument("--balance", type=float, default=1000.0)
     ap.add_argument("--capital", type=float, default=100.0, help="margen por trade")
@@ -372,7 +380,9 @@ def main():
     ap.add_argument("--bb-std", type=float, default=2.0)
     ap.add_argument("--adx-period", type=int, default=14)
     ap.add_argument("--adx-max", type=float, default=25.0, help="solo opera si ADX < este valor")
-    ap.add_argument("--sl-pct", type=float, default=0.5, help="stop loss en porciento")
+    ap.add_argument("--sl-pct", type=float, default=0.5, help="stop loss en porciento (fijo)")
+    ap.add_argument("--sl-atr-mult", type=float, default=0.0,
+                    help="SL = N x ATR (escala con volatilidad); 0 = usa --sl-pct fijo")
     ap.add_argument("--max-hold", type=int, default=30, help="máx velas en posición")
     ap.add_argument("--fee", type=float, default=0.0005, help="fee taker por lado")
     ap.add_argument("--spread-bps", type=float, default=1.0)
@@ -396,8 +406,8 @@ def main():
         print("Modo sintético (validación del motor):")
         dfs = {s: synthetic_candles(60000, seed=11 + k) for k, s in enumerate(args.symbols)}
     else:
-        print(f"Descargando {args.days} días de OKX (velas 1m):")
-        dfs = {s: download_okx_candles(s, args.days) for s in args.symbols}
+        print(f"Descargando {args.days} días de OKX (velas {args.bar}):")
+        dfs = {s: download_okx_candles(s, args.days, args.bar) for s in args.symbols}
 
     bt = ScalpelBT(args.symbols, dfs, args)
     print(f"\nCorriendo {bt.n - WARMUP:,} velas…")
