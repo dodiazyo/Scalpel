@@ -183,11 +183,17 @@ class ScalpelBT:
         self.pos: dict[str, dict] = {}   # posición abierta por símbolo
 
     def _open(self, sym, direction, ts, open_px, sma, atr):
-        # precio de ejecución adverso (cruzas el spread + slippage)
-        adj = self.spread / 2 + self.slip
-        entry = open_px * (1 + adj) if direction == "LONG" else open_px * (1 - adj)
+        # Modo maker: entras con orden límite → no cruzas el spread, fee maker.
+        # Modo taker (default): cruzas el spread + slippage, fee taker.
+        if self.args.maker:
+            adj = 0.0
+            entry = open_px
+            fee = self.notional * self.args.maker_fee
+        else:
+            adj = self.spread / 2 + self.slip
+            entry = open_px * (1 + adj) if direction == "LONG" else open_px * (1 - adj)
+            fee = self.notional * self.fee
         qty = self.notional / entry
-        fee = self.notional * self.fee
         cross = self.notional * adj
         self.fees_total += fee
         self.cross_total += cross
@@ -201,11 +207,19 @@ class ScalpelBT:
 
     def _close(self, sym, ts, exit_px, motivo):
         p = self.pos.pop(sym)
-        adj = self.spread / 2 + self.slip
-        px = exit_px * (1 - adj) if p["dir"] == "LONG" else exit_px * (1 + adj)
+        # El TP es una orden límite (maker) si el modo maker está activo;
+        # SL y salidas por tiempo siempre cruzan el mercado (taker).
+        maker_exit = self.args.maker and motivo == "TP"
+        if maker_exit:
+            adj = 0.0
+            px = exit_px
+            fee = self.notional * self.args.maker_fee
+        else:
+            adj = self.spread / 2 + self.slip
+            px = exit_px * (1 - adj) if p["dir"] == "LONG" else exit_px * (1 + adj)
+            fee = self.notional * self.fee
         gan = (px - p["entry"]) * p["qty"] if p["dir"] == "LONG" \
             else (p["entry"] - px) * p["qty"]
-        fee = self.notional * self.fee
         cross = self.notional * adj
         self.fees_total += fee
         self.cross_total += cross
@@ -339,6 +353,10 @@ def main():
     ap.add_argument("--fee", type=float, default=0.0005, help="fee taker por lado")
     ap.add_argument("--spread-bps", type=float, default=1.0)
     ap.add_argument("--slippage-bps", type=float, default=1.0)
+    ap.add_argument("--maker", action="store_true",
+                    help="entradas y TP como ordenes limite (maker), sin cruzar spread")
+    ap.add_argument("--maker-fee", type=float, default=0.0002,
+                    help="fee maker por lado (default 0.02 porciento)")
     args = ap.parse_args()
 
     print("Scalpel — backtester de scalping")
