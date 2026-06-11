@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scalpel · Paper Trading</title>
+<style>
+  :root{--bg:#0b0e13;--card:#141a22;--line:#222c38;--txt:#e6edf3;--mut:#8b97a7;
+        --grn:#2ea043;--red:#d9534f;--yel:#d2a106;--brand:#3b82f6}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif}
+  header{display:flex;align-items:center;gap:16px;padding:14px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  h1{font-size:18px;margin:0;letter-spacing:.5px}
+  .badge{font-size:11px;padding:3px 8px;border-radius:20px;border:1px solid var(--line)}
+  .on{color:var(--grn);border-color:var(--grn)} .off{color:var(--mut)}
+  .sim{color:var(--yel);border-color:var(--yel)}
+  .wrap{max-width:1100px;margin:0 auto;padding:18px 20px;display:grid;gap:18px}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .stat .k{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.4px}
+  .stat .v{font-size:20px;font-weight:600;margin-top:2px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  button,select{background:var(--card);color:var(--txt);border:1px solid var(--line);border-radius:8px;
+        padding:8px 14px;font-size:13px;cursor:pointer}
+  button.primary{background:var(--brand);border-color:var(--brand)}
+  button.danger{background:var(--red);border-color:var(--red)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .card h3{margin:0 0 8px;font-size:15px;display:flex;justify-content:space-between}
+  .kv{display:flex;justify-content:space-between;font-size:12px;color:var(--mut);padding:2px 0}
+  .kv b{color:var(--txt);font-weight:500}
+  .sec h2{font-size:13px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;margin:0 0 8px}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{color:var(--mut);font-weight:500}
+  .pos{color:var(--grn)} .neg{color:var(--red)}
+  .log{background:#0d1117;border:1px solid var(--line);border-radius:8px;padding:10px;
+       font:12px/1.6 ui-monospace,Menlo,monospace;max-height:200px;overflow:auto;color:var(--mut)}
+  .note{font-size:12px;color:var(--yel);background:#1c1a0e;border:1px solid #463d10;border-radius:8px;padding:8px 12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ SCALPEL</h1>
+  <span class="badge sim">PAPER · SIMULADO</span>
+  <span id="conn" class="badge off">desconectado</span>
+  <span id="run" class="badge off">detenido</span>
+  <span style="flex:1"></span>
+  <span id="meta" class="badge"></span>
+</header>
+
+<div class="wrap">
+  <div class="note">Modo papel: opera con datos reales de OKX pero <b>sin dinero real</b>. El backtest a 15m es sub-breakeven (PF 0.87); el edge validado está en momentum 4H sobre alts.</div>
+
+  <div class="row">
+    <button class="primary" onclick="api('/api/start')">▶ Iniciar</button>
+    <button class="danger" onclick="api('/api/stop')">⏸ Detener</button>
+    <select id="strategy" onchange="setCfg()">
+      <option value="meanrev">Reversión (15m)</option>
+      <option value="momentum">Momentum (4H)</option>
+    </select>
+    <select id="bar" onchange="setCfg()">
+      <option>1m</option><option>5m</option><option selected>15m</option>
+      <option>1H</option><option>4H</option>
+    </select>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="k">Balance</div><div class="v" id="bal">—</div></div>
+    <div class="stat"><div class="k">P&L</div><div class="v" id="pnl">—</div></div>
+    <div class="stat"><div class="k">Win rate</div><div class="v" id="wr">—</div></div>
+    <div class="stat"><div class="k">Operaciones</div><div class="v" id="ops">—</div></div>
+    <div class="stat"><div class="k">Abiertas</div><div class="v" id="open">—</div></div>
+  </div>
+
+  <div class="sec"><h2>Mercados</h2><div class="grid" id="syms"></div></div>
+  <div class="sec"><h2>Posiciones abiertas (papel)</h2><div id="positions"></div></div>
+  <div class="sec"><h2>Últimas operaciones</h2><div id="trades"></div></div>
+  <div class="sec"><h2>Actividad</h2><div class="log" id="log"></div></div>
+</div>
+
+<script>
+async function api(path){ await fetch(path,{method:'POST'}); refresh(); }
+async function setCfg(){
+  const strategy=document.getElementById('strategy').value;
+  const bar=document.getElementById('bar').value;
+  await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({strategy,bar})});
+  refresh();
+}
+function money(n){return (n>=0?'+':'')+'$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+function cls(n){return n>=0?'pos':'neg'}
+
+async function refresh(){
+  let d; try{ d=await (await fetch('/api/status')).json() }catch(e){ return }
+  document.getElementById('conn').className='badge '+(d.connected?'on':'off');
+  document.getElementById('conn').textContent=d.connected?'OKX conectado':'desconectado';
+  document.getElementById('run').className='badge '+(d.running?'on':'off');
+  document.getElementById('run').textContent=d.running?'corriendo':'detenido';
+  document.getElementById('meta').textContent=d.strategy+' · '+d.bar;
+  document.getElementById('bal').textContent='$'+d.balance.toLocaleString();
+  const pnl=document.getElementById('pnl'); pnl.textContent=money(d.pnl); pnl.className='v '+cls(d.pnl);
+  document.getElementById('wr').textContent=d.win_rate+'%';
+  document.getElementById('ops').textContent=(d.wins+d.losses)+' ('+d.wins+'W/'+d.losses+'L)';
+  document.getElementById('open').textContent=d.positions.length;
+
+  document.getElementById('syms').innerHTML=Object.entries(d.symbols).map(([s,m])=>{
+    const rangeBadge=m.adx<18?'<span class="pos">RANGO</span>':'<span class="neg">TENDENCIA</span>';
+    return `<div class="card"><h3>${s} <span>$${m.price.toLocaleString()}</span></h3>
+      <div class="kv"><span>RSI</span><b>${m.rsi}</b></div>
+      <div class="kv"><span>ADX</span><b>${m.adx} ${rangeBadge}</b></div>
+      <div class="kv"><span>Banda inf / sup</span><b>${m.bb_dn.toLocaleString()} / ${m.bb_up.toLocaleString()}</b></div>
+      <div class="kv"><span>Media</span><b>${m.sma.toLocaleString()}</b></div></div>`;
+  }).join('')||'<div class="card">Esperando datos… pulsa Iniciar.</div>';
+
+  document.getElementById('positions').innerHTML=d.positions.length?
+    `<table><tr><th>Símbolo</th><th>Dir</th><th>Entrada</th><th>SL</th><th>TP</th></tr>`+
+    d.positions.map(p=>`<tr><td>${p.sym}</td><td>${p.dir}</td><td>${p.entry}</td>
+      <td>${p.sl}</td><td>${p.tp??'—'}</td></tr>`).join('')+`</table>`
+    :'<div class="card" style="color:var(--mut)">Sin posiciones abiertas.</div>';
+
+  document.getElementById('trades').innerHTML=d.trades.length?
+    `<table><tr><th>Hora</th><th>Símbolo</th><th>Dir</th><th>Salida</th><th>Motivo</th><th>P&L</th></tr>`+
+    d.trades.map(t=>`<tr><td>${t.ts}</td><td>${t.sym}</td><td>${t.dir}</td><td>${t.exit}</td>
+      <td>${t.motivo}</td><td class="${cls(t.pnl)}">${money(t.pnl)}</td></tr>`).join('')+`</table>`
+    :'<div class="card" style="color:var(--mut)">Aún sin operaciones cerradas.</div>';
+
+  document.getElementById('log').innerHTML=d.log.map(l=>`<div>${l}</div>`).join('');
+}
+setInterval(refresh,3000); refresh();
+</script>
+</body>
+</html>
