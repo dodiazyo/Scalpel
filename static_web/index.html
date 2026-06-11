@@ -93,7 +93,8 @@
 
   <div class="stats">
     <div class="stat"><div class="k">Balance</div><div class="v" id="bal">—</div></div>
-    <div class="stat"><div class="k">P&L</div><div class="v" id="pnl">—</div></div>
+    <div class="stat"><div class="k">P&L cerrado</div><div class="v" id="pnl">—</div></div>
+    <div class="stat"><div class="k">P&L abierto</div><div class="v" id="openpnl">—</div></div>
     <div class="stat"><div class="k">Win rate</div><div class="v" id="wr">—</div></div>
     <div class="stat"><div class="k">Operaciones</div><div class="v" id="ops">—</div></div>
     <div class="stat"><div class="k">Abiertas</div><div class="v" id="open">—</div></div>
@@ -155,6 +156,7 @@ async function refresh(){
   document.getElementById('meta').textContent=d.strategy+' · '+d.bar;
   document.getElementById('bal').textContent='$'+d.balance.toLocaleString();
   const pnl=document.getElementById('pnl'); pnl.textContent=money(d.pnl); pnl.className='v '+cls(d.pnl);
+  const op=document.getElementById('openpnl'); op.textContent=money(d.open_pnl||0); op.className='v '+cls(d.open_pnl||0);
   document.getElementById('wr').textContent=d.win_rate+'%';
   document.getElementById('ops').textContent=(d.wins+d.losses)+' ('+d.wins+'W/'+d.losses+'L)';
   document.getElementById('open').textContent=d.positions.length;
@@ -170,9 +172,10 @@ async function refresh(){
   }).join('')||'<div class="card">⏳ Conectando a OKX y cargando mercados…</div>';
 
   document.getElementById('positions').innerHTML=d.positions.length?
-    `<table><tr><th>Símbolo</th><th>Dir</th><th>Entrada</th><th>SL</th><th>TP</th></tr>`+
+    `<table><tr><th>Símbolo</th><th>Dir</th><th>Entrada</th><th>Precio actual</th><th>SL</th><th>TP</th><th>P&L</th></tr>`+
     d.positions.map(p=>`<tr><td>${p.sym}</td><td>${p.dir}</td><td>${p.entry}</td>
-      <td>${p.sl}</td><td>${p.tp??'—'}</td></tr>`).join('')+`</table>`
+      <td>${p.price}</td><td>${p.sl}</td><td>${p.tp??'—'}</td>
+      <td class="${cls(p.pnl)}"><b>${money(p.pnl)}</b> (${p.pnl_pct>=0?'+':''}${p.pnl_pct}%)</td></tr>`).join('')+`</table>`
     :'<div class="card" style="color:var(--mut)">Sin posiciones abiertas.</div>';
 
   document.getElementById('trades').innerHTML=d.trades.length?

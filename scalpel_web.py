@@ -197,17 +197,33 @@ class PaperEngine:
     def status(self) -> dict:
         with self._lock:
             total = self.wins + self.losses
+            # Posiciones con P&L en vivo (no realizado) usando el precio actual.
+            positions = []
+            open_pnl = 0.0
+            for s, p in self.pos.items():
+                price = self.sym_data.get(s, {}).get("price") or p["entry"]
+                pnl = (price - p["entry"]) * p["qty"] if p["dir"] == "LONG" \
+                    else (p["entry"] - price) * p["qty"]
+                open_pnl += pnl
+                positions.append({
+                    "sym": s, "dir": p["dir"],
+                    "entry": round(p["entry"], 6), "price": round(price, 6),
+                    "sl": round(p["sl"], 6),
+                    "tp": round(p["tp"], 6) if p["tp"] is not None else None,
+                    "pnl": round(pnl, 2),
+                    "pnl_pct": round(pnl / self.cfg["capital"] * 100, 2) if self.cfg["capital"] else 0.0,
+                })
             return {
                 "running": self.running, "connected": self.connected,
                 "last_update": self.last_update,
                 "strategy": self.cfg["strategy"], "bar": self.cfg["bar"],
                 "balance": round(self.balance, 2), "balance_ini": self.balance_ini,
                 "pnl": round(self.balance - self.balance_ini, 2),
+                "open_pnl": round(open_pnl, 2),
                 "wins": self.wins, "losses": self.losses,
                 "win_rate": round(self.wins / total * 100) if total else 0,
                 "symbols": self.sym_data,
-                "positions": [{"sym": s, **{k: (round(v, 6) if isinstance(v, float) else v)
-                                            for k, v in p.items()}} for s, p in self.pos.items()],
+                "positions": positions,
                 "trades": self.trades[:30],
                 "log": self.log[:40],
                 "cfg": self.cfg,
