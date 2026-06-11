@@ -133,6 +133,10 @@ def add_indicators(df: pd.DataFrame, bb_period: int, bb_std: float,
     d["don_hi"] = d["high"].rolling(don_period).max().shift(1)
     d["don_lo"] = d["low"].rolling(don_period).min().shift(1)
 
+    # Ratio de volumen vs su media (convicción del movimiento)
+    d["vol_ratio"] = d["volume"] / d["volume"].rolling(20).mean()
+    d["hour"] = pd.to_datetime(d["ts"]).dt.hour
+
     # RSI (Wilder)
     delta = d["close"].diff()
     gain = delta.clip(lower=0)
@@ -320,6 +324,23 @@ class ScalpelBT:
                     long_ok = long_trig and prev["rsi"] <= a.rsi_long
                     short_ok = short_trig and prev["rsi"] >= a.rsi_short
 
+                # ── Filtros de calidad (principiados, atacan el ratio coste/edge) ──
+                # 1) Volatilidad mínima: solo si hay movimiento que capturar.
+                if a.min_atr_pct > 0 and prev["close"] > 0:
+                    if (prev["atr"] / prev["close"] * 100) < a.min_atr_pct:
+                        long_ok = short_ok = False
+                # 2) Volumen elevado: convicción.
+                if a.min_vol_ratio > 0 and not np.isnan(prev["vol_ratio"]):
+                    if prev["vol_ratio"] < a.min_vol_ratio:
+                        long_ok = short_ok = False
+                # 3) Sesión horaria (UTC).
+                if a.hour_start >= 0 and a.hour_end >= 0:
+                    h = int(prev["hour"])
+                    in_sesion = (a.hour_start <= h < a.hour_end) if a.hour_start <= a.hour_end \
+                        else (h >= a.hour_start or h < a.hour_end)
+                    if not in_sesion:
+                        long_ok = short_ok = False
+
                 if long_ok:
                     self._open(sym, "LONG", ts, c["open"], prev["sma"], prev["atr"])
                 elif short_ok:
@@ -439,6 +460,12 @@ def main():
                     help="solo SHORT si RSI >= este valor (default 0 = sin filtro)")
     ap.add_argument("--require-reversal", action="store_true",
                     help="exige vela de rechazo (mecha fuera, cierre dentro de la banda)")
+    ap.add_argument("--min-atr-pct", type=float, default=0.0,
+                    help="solo entra si ATR/precio >= este pct (filtro de volatilidad)")
+    ap.add_argument("--min-vol-ratio", type=float, default=0.0,
+                    help="solo entra si volumen/media >= este valor (filtro de convicción)")
+    ap.add_argument("--hour-start", type=int, default=-1, help="hora UTC inicio sesión (-1 = off)")
+    ap.add_argument("--hour-end", type=int, default=-1, help="hora UTC fin sesión (-1 = off)")
     args = ap.parse_args()
 
     print("Scalpel — backtester de scalping")
